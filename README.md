@@ -170,7 +170,7 @@ You can then run it using `mix`:
 
     $ mix ecto.create
     $ mix ecto.migrate
-    $ mix phoenix.server
+    $ mix phx.server
 
 And it'll run with the GitHub API mocked-out.
 
@@ -298,6 +298,8 @@ You can do using Heroku's one-button-deploy system:
 [![Deploy on Heroku](https://www.herokucdn.com/deploy/button.svg)](https://heroku.com/deploy)
 
 Or you can do it manually:
+
+**Note**: The `GITHUB_INTEGRATION_ID` is now called the App ID on GitHub.
 
     $ heroku create --buildpack "https://github.com/HashNuke/heroku-buildpack-elixir.git" bors-app
     $ heroku buildpacks:add https://github.com/gjaldon/heroku-buildpack-phoenix-static.git

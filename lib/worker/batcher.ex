@@ -383,6 +383,7 @@ defmodule BorsNG.Worker.Batcher do
     end
   end
 
+  @spec complete_batch(Status.state, Batch.t, [Status.t]) :: :ok
   defp complete_batch(:ok, batch, statuses) do
     project = batch.project
     repo_conn = get_repo_conn(project)
@@ -538,13 +539,9 @@ defmodule BorsNG.Worker.Batcher do
     |> Enum.map(fn {context, _} -> context end)
     |> MapSet.new()
     |> MapSet.disjoint?(MapSet.new(toml.pr_status))
-    passed_review = if is_nil(toml.required_approvals) do
-      :sufficient
-    else
-      repo_conn
-      |> GitHub.get_reviews!(patch.pr_xref)
-      |> are_reviews_passing(toml.required_approvals)
-    end
+    passed_review = repo_conn
+    |> GitHub.get_reviews!(patch.pr_xref)
+    |> reviews_status(toml)
     case {passed_label, passed_status, passed_review} do
       {true, true, :sufficient} -> :ok
       {false, _, _}             -> {:error, :blocked_labels}
@@ -554,13 +551,25 @@ defmodule BorsNG.Worker.Batcher do
     end
   end
 
-  defp are_reviews_passing(reviews, required) do
-    %{"CHANGES_REQUESTED" => failed, "APPROVED" => passed} = reviews
-
-    case {failed, passed} do
-      {failed, 0} when failed > 0 -> :failed
-      {_, approved} when approved >= required -> :sufficient
-      {0, _} -> :insufficient
+  @spec reviews_status(map, Batcher.BorsToml.t) :: :sufficient | :failed | :insufficient
+  defp reviews_status(reviews, toml) do
+    %{"CHANGES_REQUESTED" => failed, "APPROVED" => approvals} = reviews
+    review_required? = is_integer(toml.required_approvals)
+    approvals_needed = review_required? && toml.required_approvals || 0
+    approved? = approvals >= approvals_needed
+    failed? = failed > 0
+    cond do
+      # NOTE: A way to disable the code reviewing behaviour was requested on #587.
+      #   As such, we only apply the reviewing rules if, on bors, the config
+      #   `required_approvals` is present and an integer.
+      not review_required? ->
+        :sufficient
+      failed? ->
+        :failed
+      approved? ->
+        :sufficient
+      review_required? ->
+        :insufficient
     end
   end
 
@@ -646,17 +655,22 @@ defmodule BorsNG.Worker.Batcher do
   end
 
   defp put_incomplete_on_hold(repo_conn, batch) do
-    batches_query = batch.project_id
+    batches = batch.project_id
     |> Batch.all_for_project(:running)
     |> where([b], b.id != ^batch.id and b.priority < ^batch.priority)
-    Status
-    |> join(:inner, [s], b in ^batches_query, s.batch_id == b.id)
-    |> Repo.delete_all()
-    batches_query
     |> Repo.all()
-    |> Enum.each(&send_status(repo_conn, &1, :delayed))
-    Repo.update_all(batches_query,
-      set: [state: :waiting])
+
+    ids = Enum.map(batches, &(&1.id))
+
+    Status
+    |> where([s], s.batch_id in ^ids)
+    |> Repo.delete_all()
+
+    
+    Enum.each(batches, &send_status(repo_conn, &1, :delayed))
+    Batch
+    |> where([b], b.id in ^ids)
+    |> Repo.update_all(set: [state: :waiting])
   end
 
   defp poll_after_delay(project) do
